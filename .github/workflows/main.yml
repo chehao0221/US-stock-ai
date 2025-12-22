@@ -2,18 +2,35 @@ name: US Stock Daily Analysis
 
 on:
   schedule:
-    - cron: '0 22 * * 1-5' # 台灣時間週二至週六 06:00
-  workflow_dispatch:
+    # 台灣時間週二至週六 06:00 (對應美股週一至週五收盤)
+    - cron: '0 22 * * 1-5' 
+  workflow_dispatch: # 允許手動執行
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    
+    # 設定權限，確保 Action 有權讀取內容
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4 # 升級至 v4 以獲得更好的效能
+
+      - name: Set up Python
+        uses: actions/setup-python@v5 # 升級至 v5 並加入快取機制
         with:
           python-version: '3.9'
-      - run: pip install yfinance pandas numpy requests xgboost scikit-learn lxml html5lib
-      - env:
+          cache: 'pip' # 自動快取相依套件，加快執行速度
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy requests xgboost scikit-learn lxml html5lib
+
+      - name: Run Analysis Script
+        env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TZ: "Asia/Taipei" # 設定時區，確保 Python 抓取日期正確
         run: python run_us.py
