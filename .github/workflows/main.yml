@@ -1,0 +1,19 @@
+name: US Stock Daily Analysis
+
+on:
+  schedule:
+    - cron: '0 22 * * 1-5' # 台灣時間週二至週六 06:00
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - run: pip install yfinance pandas numpy requests xgboost scikit-learn lxml html5lib
+      - env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python run_us.py
