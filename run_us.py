@@ -18,7 +18,7 @@ HISTORY_FILE = "us_stock_predictions.csv"
 YEARS = 5
 TOP_PICK = 5
 MIN_VOLUME = 1500000 
-# 重點監控清單
+# 指定顯示清單 (不管 AI 排名如何都會顯示在下方)
 MUST_WATCH = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "QQQ", "SPY", "SOXL"] 
 
 def get_us_stock_list():
@@ -48,14 +48,12 @@ def compute_features(df):
     return df
 
 def check_us_accuracy_and_report():
-    """自動對帳美股 5 日前的預測"""
     if not os.path.exists(HISTORY_FILE): return ""
     history = pd.read_csv(HISTORY_FILE)
     history['Date'] = pd.to_datetime(history['Date'])
     check_date = datetime.datetime.now() - datetime.timedelta(days=7)
     pending = history[(history['Date'] <= check_date) & (history['Actual_Return'].isna())]
     if pending.empty: return ""
-
     report = "🇺🇸 **美股 AI 準確度結算 (5日前預測)**\n━━━━━━━━━━━━━━━━━━\n"
     for idx, row in pending.iterrows():
         try:
@@ -81,13 +79,11 @@ def save_us_prediction(symbol, pred, price):
 
 def run():
     if not DISCORD_WEBHOOK_URL: return
-    
-    # 1. 執行美股對帳
     acc_report = check_us_accuracy_and_report()
     if acc_report: requests.post(DISCORD_WEBHOOK_URL, json={"content": acc_report})
 
     symbols = get_us_stock_list()
-    scoring = []
+    all_results = {}
     features = ["mom20", "mom60", "rsi", "vol_ratio", "volatility", "bias"]
 
     for sym in symbols:
@@ -95,42 +91,42 @@ def run():
             ticker = yf.Ticker(sym)
             df = ticker.history(period=f"{YEARS}y")
             if len(df) < 150: continue
-            
-            # 計算美股支撐與壓力 (近 20 日)
             sup = df['Low'].tail(20).min()
             res = df['High'].tail(20).max()
-                
             df = compute_features(df)
             df["future_return"] = df["Close"].shift(-5) / df["Close"] - 1
             full_data = df.dropna()
             if full_data.empty: continue
-
             model = XGBRegressor(n_estimators=100, max_depth=4, learning_rate=0.05, random_state=42)
             model.fit(full_data[features], full_data["future_return"])
-            
             latest_price = df["Close"].iloc[-1]
             pred = model.predict(df[features].iloc[-1:])[0]
-            
-            # 存入海選結果 (符合成交量或在監控清單中)
-            if df["Volume"].tail(10).mean() >= MIN_VOLUME or sym in MUST_WATCH:
-                scoring.append({
-                    "sym": sym, "pred": pred, "price": latest_price,
-                    "sup": sup, "res": res
-                })
+            all_results[sym] = {"pred": pred, "price": latest_price, "sup": sup, "res": res, "vol": df["Volume"].tail(10).mean()}
         except: continue
 
-    # 2. 處理美股排行榜報告
-    est_now = (datetime.datetime.utcnow() - datetime.timedelta(hours=5)).strftime("%Y-%m-%d %H:%M EST")
-    top_picks = sorted(scoring, key=lambda x: x['pred'], reverse=True)[:TOP_PICK]
+    # 1. 篩選排行榜 (符合成交量的前 5 名)
+    ranking_list = [s for s, v in all_results.items() if v['vol'] >= MIN_VOLUME]
+    top_picks_keys = sorted(ranking_list, key=lambda x: all_results[x]['pred'], reverse=True)[:TOP_PICK]
     
-    if top_picks:
-        report = f"🇺🇸 **美股 AI 最新預測排行榜** ({est_now})\n━━━━━━━━━━━━━━━━━━\n"
-        for i, item in enumerate(top_picks):
-            save_us_prediction(item['sym'], item['pred'], item['price'])
-            emoji = ['🥇','🥈','🥉','📈','📈'][i]
-            report += f"{emoji} **{item['sym']}**: `+{item['pred']:.2%}`\n"
-            report += f"   └ 現價: `${item['price']:.2f}` (支撐: {item['sup']:.1f} / 壓力: {item['res']:.1f})\n"
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": report})
+    est_now = (datetime.datetime.utcnow() - datetime.timedelta(hours=5)).strftime("%Y-%m-%d %H:%M EST")
+    report = f"🇺🇸 **最新美股 AI 預測報告** ({est_now})\n━━━━━━━━━━━━━━━━━━\n"
+    
+    report += "🏆 **AI 預測排行榜**\n"
+    for i, sym in enumerate(top_picks_keys):
+        item = all_results[sym]
+        save_us_prediction(sym, item['pred'], item['price'])
+        emoji = ['🥇','🥈','🥉','📈','📈'][i]
+        report += f"{emoji} **{sym}**: `+{item['pred']:.2%}`\n   └ 現價: `${item['price']:.2f}` (支撐: {item['sup']:.1f} / 壓力: {item['res']:.1f})\n"
+
+    # 2. 顯示指定監控標的 (不論排名)
+    report += "\n💎 **指定監控標的**\n"
+    for sym in MUST_WATCH:
+        if sym in all_results:
+            item = all_results[sym]
+            status = "🚀" if item['pred'] > 0.025 else "⭐"
+            report += f"{status} **{sym}**: `預估 {item['pred']:+.2%}`\n   └ 現價: `${item['price']:.2f}` (支撐: {item['sup']:.1f} / 壓力: {item['res']:.1f})\n"
+
+    requests.post(DISCORD_WEBHOOK_URL, json={"content": report})
 
 if __name__ == "__main__":
     run()
