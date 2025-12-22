@@ -77,16 +77,12 @@ def run():
         report += f"{['🥇','🥈','🥉','📈','📈'][i]} **{s}**: `+{p:.2%}`\n"
     send_to_discord(report)
 
-    # 2. 重點標的分段發送 + TradingView 連結
+    # 2. 重點標的分段發送 (純文字版)
     for item in must_watch_details:
         status = "🚀" if item['pred'] > 0.01 else "💎"
-        # 生成美股專屬 TradingView 連結
-        tv_link = f"https://www.tradingview.com/chart/?symbol={item['sym']}"
-        
         msg = f"{status} **{item['sym']}** 分析報告\n"
         msg += f"  - 預測報酬: `{item['pred']:+.2%}`\n"
-        msg += f"  - 現價: {item['price']:.2f} (支撐: {item['sup']:.2f} / 壓力: {item['res']:.2f})\n"
-        msg += f"  - 📈 走勢圖: {tv_link}"
+        msg += f"  - 現價: {item['price']:.2f} (支撐: {item['sup']:.2f} / 壓力: {item['res']:.2f})"
         send_to_discord(msg)
 
 if __name__ == "__main__":
