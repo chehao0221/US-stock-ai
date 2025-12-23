@@ -16,7 +16,7 @@ def get_us_300_pool():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         df = pd.read_html(requests.get(url).text)[0]
         return [s.replace('.', '-') for s in df['Symbol'].tolist()[:300]]
-    except: return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN"]
+    except: return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
 def compute_features(df):
     df = df.copy()
@@ -57,7 +57,8 @@ def audit_and_save(current_results, top_5_keys):
 def run():
     if not WEBHOOK_URL: return
     symbols = get_us_300_pool()
-    must_watch = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN"]
+    # 擴充監控清單，加入指數 ETF 與熱門標的
+    must_watch = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "QQQ", "SPY", "SOXL"]
     all_syms = list(set(symbols + must_watch))
     data = yf.download(all_syms, period="5y", progress=False)
     results = {}
@@ -76,7 +77,7 @@ def run():
     top_5 = sorted([s for s in results if s not in must_watch], key=lambda x: results[x]['p'], reverse=True)[:5]
     audit_report = audit_and_save(results, top_5)
     
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = datetime.now().strftime("%Y-%m-%d %H:%M EST")
     msg = f"🇺🇸 **美股 AI 預估報告 ({today})**\n"
     msg += "----------------------------------\n"
     msg += "🏆 **300 股票前 5 的未來預估**\n"
@@ -84,13 +85,15 @@ def run():
     for idx, s in enumerate(top_5):
         i = results[s]
         msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n"
-        msg += f"└ 現價: `{i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+        msg += f"└ 現價: `${i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
     msg += "\n💎 **指定監控標的未來預估**\n"
     for s in must_watch:
         if s in results:
+            # 針對指數或半導體 ETF 使用火箭 Emoji 增加視覺效果
+            emoji = "🚀" if s in ["TSLA", "SOXL"] else "⭐"
             i = results[s]
-            msg += f"⭐ **{s}**: `預估 {i['p']:+.2%}`\n"
-            msg += f"└ 現價: `{i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+            msg += f"{emoji} **{s}**: `預估 {i['p']:+.2%}`\n"
+            msg += f"└ 現價: `${i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
     msg += audit_report + "\n💡 *註：預估值為 AI 對未來 5 個交易日後的走勢判斷。*"
     requests.post(WEBHOOK_URL, json={"content": msg})
 
