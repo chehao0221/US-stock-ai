@@ -16,7 +16,7 @@ def get_us_300_pool():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         df = pd.read_html(requests.get(url).text)[0]
         return [s.replace('.', '-') for s in df['Symbol'].tolist()[:300]]
-    except: return ["AAPL", "NVDA", "TSLA", "MSFT"]
+    except: return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN"]
 
 def compute_features(df):
     df = df.copy()
@@ -43,13 +43,12 @@ def audit_and_save(current_results, top_5_keys):
                     curr_p = yf.Ticker(row['symbol']).history(period="1d")['Close'].iloc[-1]
                     actual_ret = (curr_p - row['pred_p']) / row['pred_p']
                     is_hit = "✅ 命中" if (actual_ret > 0 and row['pred_ret'] > 0) or (actual_ret < 0 and row['pred_ret'] < 0) else "❌ 錯誤"
-                    audit_msg += f" {row['symbol']}: 預估 {row['pred_ret']:+.2%} ➔ 實際 {actual_ret:+.2%} ({is_hit})\n"
+                    audit_msg += f"`{row['symbol']}`: 預估 `{row['pred_ret']:+.2%}` ➔ 實際 `{actual_ret:+.2%}` ({is_hit})\n"
                     hist_df.at[idx, 'settled'] = True
                 except: continue
         hist_df.to_csv(HISTORY_FILE, index=False)
     else:
         hist_df = pd.DataFrame(columns=['date', 'symbol', 'pred_p', 'pred_ret', 'settled'])
-
     new_recs = [{'date': datetime.now().strftime("%Y-%m-%d"), 'symbol': s, 'pred_p': current_results[s]['c'], 'pred_ret': current_results[s]['p'], 'settled': False} for s in top_5_keys]
     hist_df = pd.concat([hist_df, pd.DataFrame(new_recs)], ignore_index=True)
     hist_df.to_csv(HISTORY_FILE, index=False)
@@ -69,23 +68,30 @@ def run():
             df = compute_features(df)
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
             train = df.dropna()
-            model = XGBRegressor(n_estimators=100, max_depth=3)
+            model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.07)
             model.fit(train[feats], train["target"])
             pred = model.predict(df[feats].iloc[-1:])[0]
             results[s] = {"p": pred, "c": df["Close"].iloc[-1], "s": df["sup"].iloc[-1], "r": df["res"].iloc[-1]}
         except: continue
     top_5 = sorted([s for s in results if s not in must_watch], key=lambda x: results[x]['p'], reverse=True)[:5]
     audit_report = audit_and_save(results, top_5)
-    msg = "━━━━━━━━━━━━━━━━━━\n 300 股票前 5 的未來預估\n"
-    for s in top_5:
+    
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    msg = f"🇺🇸 **美股 AI 預測報告 ({today})**\n"
+    msg += "----------------------------------\n"
+    msg += "🏆 **300 股票前 5 的未來預估**\n"
+    ranks = ["🥇", "🥈", "🥉", "📈", "📈"]
+    for idx, s in enumerate(top_5):
         i = results[s]
-        msg += f" {s}: 預估 {i['p']:+.2%}\n    └ 現價: {i['c']:.2f} (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
-    msg += "\n 指定監控標的未來預估\n"
+        msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n"
+        msg += f"└ 現價: `{i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+    msg += "\n💎 **指定監控標的未來預估**\n"
     for s in must_watch:
         if s in results:
             i = results[s]
-            msg += f" {s}: 預估 {i['p']:+.2%}\n    └ 現價: {i['c']:.2f} (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
-    msg += audit_report + "\n 註：預估值為 AI 對未來 5 個交易日後的走勢判斷。"
+            msg += f"⭐ **{s}**: `預估 {i['p']:+.2%}`\n"
+            msg += f"└ 現價: `{i['c']:.2f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+    msg += audit_report + "\n💡 *註：預估值為 AI 對未來 5 個交易日後的走勢判斷。*"
     requests.post(WEBHOOK_URL, json={"content": msg})
 
 if __name__ == "__main__": run()
