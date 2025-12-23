@@ -2,50 +2,38 @@ name: US Stock Daily Analysis
 
 on:
   schedule:
-    # 台灣時間週二至週六 06:00 (對應美股週一至週五收盤)
+    # 台灣時間週二至週六 06:00 (美股收盤後)
     - cron: '0 22 * * 1-5' 
-  workflow_dispatch: # 允許手動執行
+  workflow_dispatch: 
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     
-    # 必須設定為 write，Action 才有權限把 CSV 檔推回你的倉庫
     permissions:
       contents: write
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4 # 升級至 v4 以獲得更好的效能
+        uses: actions/checkout@v4
         with:
-          # 確保使用 Token 進行驗證
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # 升級至 v5 並加入快取機制
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-          cache: 'pip' # 自動快取相依套件
+          python-version: '3.10' # 修正：升級到 3.10 防止 yfinance 報錯
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas numpy requests xgboost scikit-learn lxml html5lib
+          # 修正：移除 xgboost/sklearn，只保留消息所需的套件
+          pip install yfinance requests feedparser
 
       - name: Run Analysis Script
         env:
+          # 注意：請確認您的 Secret 名稱是 DISCORD_WEBHOOK_URL
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TZ: "Asia/Taipei" 
         run: python run_us.py
-
-      # --- 新增：自動將美股預測紀錄存回 GitHub ---
-      - name: Commit and Push changes
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          # 檢查檔案是否存在，並提交變更
-          if [ -f us_stock_predictions.csv ]; then
-            git add us_stock_predictions.csv
-            git commit -m "自動更新美股預測紀錄 [skip ci]" || echo "沒有變更需要提交"
-            git push
-          fi
