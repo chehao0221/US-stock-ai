@@ -37,7 +37,7 @@ def audit_and_save(current_results, top_5_keys):
         deadline = datetime.now() - timedelta(days=7)
         to_settle = hist_df[(hist_df['date'] <= deadline) & (hist_df['settled'] == False)]
         if not to_settle.empty:
-            audit_msg = "\n🎯 **5日預測結算對帳單**\n"
+            audit_msg = "\n🎯 **5日預估結算對帳單**\n"
             for idx, row in to_settle.iterrows():
                 try:
                     curr_p = yf.Ticker(row['symbol']).history(period="1d")['Close'].iloc[-1]
@@ -77,7 +77,7 @@ def run():
     audit_report = audit_and_save(results, top_5)
     
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    msg = f"🇺🇸 **美股 AI 預測報告 ({today})**\n"
+    msg = f"🇺🇸 **美股 AI 預估報告 ({today})**\n"
     msg += "----------------------------------\n"
     msg += "🏆 **300 股票前 5 的未來預估**\n"
     ranks = ["🥇", "🥈", "🥉", "📈", "📈"]
