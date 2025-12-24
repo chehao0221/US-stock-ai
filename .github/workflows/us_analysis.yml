@@ -1,8 +1,11 @@
-name: US Post-Market AI
+name: US Pre-Market AI
 on:
   schedule:
-    - cron: '30 22 * * 1-5' # UTC 22:30 = 台北 06:30
+    # 台北時間 21:00 執行 (UTC 13:00)
+    # 這是美股夏令時間開盤前 30 分鐘，冬令時間開盤前 1.5 小時
+    - cron: '0 13 * * 1-5'
   workflow_dispatch: 
+
 jobs:
   run:
     runs-on: ubuntu-latest
