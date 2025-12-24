@@ -1,9 +1,9 @@
-name: US Pre-Market AI
+name: US Post-Market AI (06:00 台北時間執行)
 on:
   schedule:
-    # 台北時間 21:00 執行 (UTC 13:00)
-    # 這是美股夏令時間開盤前 30 分鐘，冬令時間開盤前 1.5 小時
-    - cron: '0 13 * * 1-5'
+    # 台北時間 06:00 執行 (UTC 22:00)
+    # 此設定會在每週二至每週六的早上 6 點跑出前一晚美股的收盤報告
+    - cron: '0 22 * * 1-5'
   workflow_dispatch: 
 
 jobs:
