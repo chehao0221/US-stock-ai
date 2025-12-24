@@ -3,152 +3,118 @@ import pandas as pd
 import numpy as np
 import requests
 import os
-import warnings
 from xgboost import XGBRegressor
 from datetime import datetime, timedelta
+import warnings
 
 # =========================
-# 基本設定
+# 基本設定 (美股版)
 # =========================
 warnings.filterwarnings("ignore")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE_US = os.path.join(BASE_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-HISTORY_FILE = "us_sp500_history.csv"
 
-def get_sp500_300_pool():
-    """從維基百科抓取 S&P 500 清單並取前 300 檔"""
+# =========================
+# 支撐/壓力位計算 (美股適用)
+# =========================
+def calc_support_resistance(df):
     try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        recent = df.iloc[-20:]
+        high, low, close = recent['High'].max(), recent['Low'].min(), recent['Close'].iloc[-1]
+        pivot = (high + low + close) / 3
+        res = (2 * pivot) - low
+        sup = (2 * pivot) - high
+        return round(sup, 2), round(res, 2)
+    except: return 0, 0
+
+# =========================
+# 美股股票池 (S&P 500)
+# =========================
+def get_us_pool():
+    try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=15)
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(res.text)[0]
-        # 美股代碼轉換 (例如 BRK.B 轉 BRK-B)
-        symbols = [s.replace('.', '-') for s in df['Symbol'].tolist()]
-        return symbols[:300]
-    except Exception as e:
-        print(f"獲取 S&P 500 清單失敗: {e}")
-        # 備用核心權值股
-        return ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO"]
+        # 維基百科的 '.' 在 yfinance 要換成 '-' (例如 BRK.B -> BRK-B)
+        return [s.replace('.', '-') for s in df['Symbol'].tolist()[:500]]
+    except: 
+        return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
-def compute_features(df):
-    """計算美股特徵指標"""
-    df = df.copy()
-    # 價格變動與動能
-    df["mom20"] = df["Close"].pct_change(20)
+# =========================
+# 主程序
+# =========================
+def run_us_market():
+    # 1. 準備股票池：七巨頭 + S&P 500
+    mag_7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
+    pool_stocks = get_us_pool()
+    all_watch = list(dict.fromkeys(mag_7 + pool_stocks))
     
-    # RSI
-    delta = df["Close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    df["rsi"] = 100 - (100 / (1 + gain / (loss + 1e-9)))
+    print(f"🇺🇸 開始分析美股市場 {len(all_watch)} 檔標的...")
     
-    # 乖離率與量能比
-    df["ma20"] = df["Close"].rolling(20).mean()
-    df["bias"] = (df["Close"] - df["ma20"]) / (df["ma20"] + 1e-9)
-    df["vol_ratio"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-9)
-    
-    # 支撐壓力位
-    df["sup"] = df["Low"].rolling(60).min()
-    df["res"] = df["High"].rolling(60).max()
-    return df
-
-def audit_and_save(results, top_keys):
-    """對帳與存檔邏輯"""
-    audit_msg = ""
-    today = datetime.now().date()
-    
-    if os.path.exists(HISTORY_FILE):
-        hist = pd.read_csv(HISTORY_FILE)
-        hist['date'] = pd.to_datetime(hist['date']).dt.date
-        
-        # 檢查 7 天前的預測
-        deadline = today - timedelta(days=7)
-        unsettled = hist[(hist['settled'] == False) & (hist['date'] <= deadline)]
-        
-        if not unsettled.empty:
-            audit_msg = "\n🎯 **US 5-Day Prediction Audit**\n"
-            for idx, r in unsettled.iterrows():
-                try:
-                    p_df = yf.Ticker(r["symbol"]).history(period="1d")
-                    if p_df.empty: continue
-                    curr_p = p_df["Close"].iloc[-1]
-                    act_ret = (curr_p - r["pred_p"]) / r["pred_p"]
-                    hit = "✅" if np.sign(act_ret) == np.sign(r["pred_ret"]) else "❌"
-                    audit_msg += f"`{r['symbol']}`: {r['pred_ret']:+.2%} ➔ {act_ret:+.2%} {hit}\n"
-                    hist.at[idx, "settled"] = True
-                except: continue
-        hist.to_csv(HISTORY_FILE, index=False)
-    else:
-        hist = pd.DataFrame(columns=["date", "symbol", "pred_p", "pred_ret", "settled"])
-
-    # 存入今日預測
-    new_rows = [{"date": today, "symbol": s, "pred_p": results[s]["c"], "pred_ret": results[s]["p"], "settled": False} for s in top_keys]
-    hist = pd.concat([hist, pd.DataFrame(new_rows)], ignore_index=True)
-    hist.to_csv(HISTORY_FILE, index=False)
-    return audit_msg
-
-def run():
-    print("🚀 啟動美股 S&P 300 AI 掃描...")
-    watch_pool = get_sp500_300_pool()
-    must_watch = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL"]
-    all_syms = list(set(watch_pool + must_watch))
-    
-    # 批量抓取資料 (美股建議抓 2 年即可滿足指標計算)
-    data = yf.download(all_syms, period="2y", progress=False, group_by="ticker")
+    # 2. 下載數據 (美股建議用 2y 以涵蓋多個循環)
+    all_data = yf.download(all_watch, period="2y", auto_adjust=True, group_by="ticker", progress=False)
+    mkt_df = yf.download("SPY", period="1y", auto_adjust=True, progress=False)
     
     results = {}
-    feats = ["mom20", "rsi", "bias", "vol_ratio"]
+    feats = ["mom20", "bias", "vol_ratio"]
     
-    for s in all_syms:
+    # 3. 逐股 AI 分析
+    for s in all_watch:
         try:
-            df = data[s].dropna()
-            if len(df) < 80: continue
+            df = all_data[s].dropna()
+            if len(df) < 50: continue
             
-            df = compute_features(df)
-            df["target"] = df["Close"].shift(-5) / df["Close"] - 1 # 預估 5 日後
+            # 特徵與標籤
+            df["mom20"] = df["Close"].pct_change(20)
+            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+            df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+            df["target"] = df["Close"].shift(-5) / df["Close"] - 1
             
-            train = df.dropna()
+            train = df.dropna().iloc[-300:] # 美股交易日較多，稍增數據量
             model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42)
             model.fit(train[feats], train["target"])
             
-            # 獲取最新一筆進行預測
-            pred = float(np.clip(model.predict(df[feats].iloc[-1:])[0], -0.2, 0.2))
-            results[s] = {
-                "p": pred, 
-                "c": df["Close"].iloc[-1],
-                "s": df["sup"].iloc[-1],
-                "r": df["res"].iloc[-1]
-            }
+            pred = float(model.predict(df[feats].iloc[-1:])[0])
+            sup, res = calc_support_resistance(df)
+            
+            results[s] = {"p": pred, "c": float(df["Close"].iloc[-1]), "sup": sup, "res": res}
         except: continue
 
-    # 排序前 5 名 (排除必看標的，尋找潛力股)
-    top_5 = sorted([s for s in results if s not in must_watch], key=lambda x: results[x]['p'], reverse=True)[:5]
-    audit_report = audit_and_save(results, top_5)
+    # 4. 組合報告訊息
+    msg = f"🇺🇸 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    msg += "------------------------------------------\n\n"
     
-    # Discord 報告排版
-    report_date = datetime.now().strftime("%Y-%m-%d %H:%M")
-    msg = f"🇺🇸 **美股 AI 預估報告 (S&P 300) - {report_date}**\n"
-    msg += "━━━━━━━━━━━━━━━━━━\n"
-    msg += "🏆 **未來 5 日漲幅 Top 5 潛力股**\n"
+    # --- 區塊一：AI 海選 Top 5 (排除巨頭) ---
+    msg += "🏆 **AI 海選 Top 5 (美股潛力股)**\n"
+    horses = {k: v for k, v in results.items() if k not in mag_7}
+    top_5 = sorted(horses, key=lambda x: horses[x]["p"], reverse=True)[:5]
     
-    ranks = ["🥇", "🥈", "🥉", "📈", "📈"]
-    for idx, s in enumerate(top_5):
-        i = results[s]
-        msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n"
-        msg += f"   └ 現價: `${i['c']:.2f}` (支撐: {i['s']:.2f} / 壓力: {i['r']:.2f})\n"
-
-    msg += "\n💡 **核心權值股觀測**\n"
-    for s in must_watch:
+    medals = ["🥇", "🥈", "🥉", "📈", "📈"]
+    for i, s in enumerate(top_5):
+        r = results[s]
+        msg += f"{medals[i]} **{s}**: 預估 `{r['p']:+.2%}`\n"
+        msg += f" └ 現價: `{r['c']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+        
+    # --- 區塊二：科技巨頭監控 ---
+    msg += "\n💎 **科技巨頭監控 (Magnificent 7)**\n"
+    for s in mag_7:
         if s in results:
-            i = results[s]
-            msg += f"⭐ **{s}**: `${i['c']:.2f}` | `預估 {i['p']:+.2%}`\n"
+            r = results[s]
+            msg += f"**{s}**: 預估 `{r['p']:+.2%}` | 現價: `{r['c']:.2f}`\n"
 
-    msg += audit_report + "\n*Risk Warning: Predictions are for educational purposes.*"
-    
-    # 發送通知
+    msg += "\n💡 AI 預測僅供參考，美股波動大請注意風險控制。"
+
+    # 5. 發送與儲存歷史
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg})
-    else:
-        print("\n--- Discord Preview ---\n", msg)
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
+    else: print(msg)
+    
+    # 儲存供 5 日後對帳
+    new_entries = [{"date": datetime.now().date(), "symbol": s, "pred_p": results[s]['c'], 
+                    "pred_ret": results[s]['p'], "settled": "False"} for s in (top_5 + mag_7) if s in results]
+    pd.DataFrame(new_entries).to_csv(HISTORY_FILE_US, mode='a', header=not os.path.exists(HISTORY_FILE_US), index=False)
 
 if __name__ == "__main__":
-    run()
+    run_us_market()
