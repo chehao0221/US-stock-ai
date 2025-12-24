@@ -1,3 +1,11 @@
+from utils.market_calendar import is_market_open
+
+def pre_check():
+    if not is_market_open("US"):
+        print("📌 因假日或節日，美股未開盤，停止動作")
+        return False
+    return True
+
 import yfinance as yf
 import pandas as pd
 import requests
@@ -9,11 +17,10 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # =========================
-# 基本設定 (已修正路徑)
+# 基本設定
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 直接存放在根目錄，與 Workflow 的 git add 指令匹配
-HISTORY_FILE = os.path.join(BASE_DIR, "us_history.csv") 
+HISTORY_FILE = os.path.join(BASE_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
@@ -154,4 +161,5 @@ def run():
     )
 
 if __name__ == "__main__":
-    run()
+    if pre_check():
+        run()
