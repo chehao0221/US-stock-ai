@@ -9,13 +9,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # =========================
-# 基本設定
+# 基本設定 (已修正路徑)
 # =========================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-
-HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 直接存放在根目錄，與 Workflow 的 git add 指令匹配
+HISTORY_FILE = os.path.join(BASE_DIR, "us_history.csv") 
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
@@ -37,7 +35,7 @@ def get_sp500():
         return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
 # =========================
-# 5 日回測（實盤安全）
+# 5 日回測結算
 # =========================
 def get_settle_report():
     if not os.path.exists(HISTORY_FILE):
@@ -112,9 +110,6 @@ def run():
         except:
             continue
 
-    # =========================
-    # 組合訊息
-    # =========================
     msg = f"📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
 
@@ -143,9 +138,6 @@ def run():
     else:
         print(msg)
 
-    # =========================
-    # 儲存回測資料
-    # =========================
     hist = [{
         "date": datetime.now().date(),
         "symbol": s,
