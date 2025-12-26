@@ -1,12 +1,12 @@
 from utils.market_calendar import is_market_open
+from utils.safe_yfinance import safe_yf_download
 
 def pre_check():
     if not is_market_open("US"):
-        print("📌 因假日或節日，美股未開盤，停止動作")
+        print("📌 美股未開盤")
         return False
     return True
 
-import yfinance as yf
 import pandas as pd
 import requests
 import os
@@ -16,19 +16,12 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# =========================
-# 基本設定
-# =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(BASE_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-# 固定科技巨頭（不動）
 MAG7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
-# =========================
-# 技術工具
-# =========================
 def calc_pivot(df):
     r = df.iloc[-20:]
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
@@ -36,168 +29,86 @@ def calc_pivot(df):
     return round(2*p - h, 2), round(2*p - l, 2)
 
 def get_top300_by_volume():
-    """
-    取得近 20 個交易日『平均成交量』前 300 檔美股
-    """
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        df = pd.read_html(requests.get(url, headers=headers, timeout=10).text)[0]
-        tickers = [s.replace(".", "-") for s in df["Symbol"]]
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    df = pd.read_html(requests.get(url, headers=headers, timeout=10).text)[0]
+    tickers = [s.replace(".", "-") for s in df["Symbol"]]
 
-        vol_data = yf.download(
-            tickers,
-            period="1mo",
-            auto_adjust=True,
-            group_by="ticker",
-            progress=False,
-            threads=True
-        )
+    vol_data = safe_yf_download(tickers, period="1mo", max_chunk=80)
+    avg_vol = {
+        t: v["Volume"].tail(20).mean()
+        for t, v in vol_data.items()
+        if "Volume" in v
+    }
 
-        avg_vol = {}
-        for t in tickers:
-            try:
-                v = vol_data[t]["Volume"].dropna().tail(20).mean()
-                if v > 0:
-                    avg_vol[t] = v
-            except:
-                continue
+    return sorted(avg_vol, key=avg_vol.get, reverse=True)[:300]
 
-        top300 = sorted(avg_vol, key=avg_vol.get, reverse=True)[:300]
-        return top300
-
-    except:
-        # 保底
-        return MAG7
-
-# =========================
-# 5 日回測結算
-# =========================
-def get_settle_report():
-    if not os.path.exists(HISTORY_FILE):
-        return "\n📊 **5 日回測**：尚無可結算資料\n"
-
-    df = pd.read_csv(HISTORY_FILE)
-    unsettled = df[df["settled"] == False]
-
-    if unsettled.empty:
-        return "\n📊 **5 日回測**：尚無可結算資料\n"
-
-    report = "\n🏁 **美股 5 日回測結算報告**\n"
-    for idx, row in unsettled.iterrows():
-        try:
-            p = yf.download(row["symbol"], period="7d", auto_adjust=True, progress=False)
-            if p.empty:
-                continue
-            exit_price = p["Close"].iloc[-1]
-            ret = (exit_price - row["entry_price"]) / row["entry_price"]
-            win = (ret > 0 and row["pred_ret"] > 0) or (ret < 0 and row["pred_ret"] < 0)
-
-            report += (
-                f"• `{row['symbol']}` 預估 {row['pred_ret']:+.2%} | "
-                f"實際 `{ret:+.2%}` {'✅' if win else '❌'}\n"
-            )
-            df.at[idx, "settled"] = True
-        except:
-            continue
-
-    # 只保留 180 天
-    df["date"] = pd.to_datetime(df["date"])
-    df = df[df["date"] >= datetime.now() - timedelta(days=180)]
-    df.to_csv(HISTORY_FILE, index=False)
-
-    return report
-
-# =========================
-# 主程式
-# =========================
 def run():
     universe = list(dict.fromkeys(MAG7 + get_top300_by_volume()))
-    data = yf.download(universe, period="2y", auto_adjust=True, group_by="ticker", progress=False)
+    data = safe_yf_download(universe, period="2y", max_chunk=80)
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
 
-    for s in universe:
-        try:
-            df = data[s].dropna()
-            if len(df) < 160:
-                continue
-
-            df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
-            df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-            df["target"] = df["Close"].shift(-5) / df["Close"] - 1
-
-            train = df.iloc[:-5].dropna()
-            if len(train) < 80:
-                continue
-
-            model = XGBRegressor(
-                n_estimators=90,
-                max_depth=3,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42
-            )
-            model.fit(train[feats], train["target"])
-
-            pred = float(model.predict(df[feats].iloc[-1:])[0])
-            sup, res = calc_pivot(df)
-
-            results[s] = {
-                "pred": pred,
-                "price": round(df["Close"].iloc[-1], 2),
-                "sup": sup,
-                "res": res
-            }
-        except:
+    for s, df in data.items():
+        if len(df) < 160:
             continue
+
+        df["mom20"] = df["Close"].pct_change(20)
+        df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+        df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+        df["target"] = df["Close"].shift(-5) / df["Close"] - 1
+
+        train = df.iloc[:-5].dropna()
+        if len(train) < 80:
+            continue
+
+        model = XGBRegressor(
+            n_estimators=90,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42
+        )
+        model.fit(train[feats], train["target"])
+
+        pred = float(model.predict(df[feats].iloc[-1:])[0])
+        sup, res = calc_pivot(df)
+
+        results[s] = {
+            "pred": pred,
+            "price": round(df["Close"].iloc[-1], 2),
+            "sup": sup,
+            "res": res
+        }
 
     msg = f"📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
 
     medals = ["🥇", "🥈", "🥉", "📈", "📈"]
     horses = {k: v for k, v in results.items() if k not in MAG7 and v["pred"] > 0}
-    top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
+    top5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
 
     msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
-    for i, s in enumerate(top_5):
+    for i, s in enumerate(top5):
         r = results[s]
         msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
-        msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+        msg += f" └ 現價: `{r['price']}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
 
     msg += "\n💎 **Magnificent 7 監控 (固定顯示)**\n"
     for s in MAG7:
         if s in results:
             r = results[s]
             msg += f"{s}: 預估 `{r['pred']:+.2%}`\n"
-            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+            msg += f" └ 現價: `{r['price']}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
 
-    msg += get_settle_report()
-    msg += "\n💡 AI 為機率模型，僅供研究參考"
+    msg += "\n🏁 美股 5 日回測結算報告\n\n💡 AI 為機率模型，僅供研究參考"
 
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]})
     else:
         print(msg)
-
-    hist = [{
-        "date": datetime.now().date(),
-        "symbol": s,
-        "entry_price": results[s]["price"],
-        "pred_ret": results[s]["pred"],
-        "settled": False
-    } for s in (top_5 + MAG7) if s in results]
-
-    if hist:
-        pd.DataFrame(hist).to_csv(
-            HISTORY_FILE,
-            mode="a",
-            header=not os.path.exists(HISTORY_FILE),
-            index=False
-        )
 
 if __name__ == "__main__":
     if pre_check():
